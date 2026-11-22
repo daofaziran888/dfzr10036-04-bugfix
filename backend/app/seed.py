@@ -26,6 +26,13 @@ SEED_ROWS: dict[str, list[dict[str, Any]]] = {
             "监听表": "stock_snap", "包含列": "sku_id,warehouse,qty,version",
             "排除列": "_id", "连接状态": "断连-网络超时",
         },
+        {
+            "id": 4, "status": "监听中", "pending": True, "abnormal": False,
+            "源端编号": "PROD-MYSQL-B", "数据库类型": "MySQL 8.0",
+            "连接地址": "10.0.1.200:3306", "日志协议": "ROW格式binlog",
+            "监听表": "order_events", "包含列": "order_id,user_id,amount,status,event_time",
+            "排除列": "internal_flag", "连接状态": "稳定连接-延迟<8ms",
+        },
     ],
     "binlog_parse": [
         {
@@ -126,18 +133,36 @@ SEED_ROWS: dict[str, list[dict[str, Any]]] = {
     ],
     "sink_writer": [
         {
-            "id": 1, "status": "写入中", "pending": True, "abnormal": False,
-            "管道编号": "SK-0001", "数据流": "order_events_cdc",
+            "id": 1, "status": "草稿", "pending": True, "abnormal": False,
+            "管道编号": "SK-A1", "源端": "PROD-MYSQL-01", "数据流": "order_events_cdc",
             "目标载体": "ads.order_events_iceberg", "写入模式": "UPSERT",
             "分区列": "ds=event_date", "批次大小": "5000行/批",
-            "压缩格式": "ZSTD-Level3", "写入速率": "800MB/min",
+            "压缩格式": "ZSTD-Level3", "写入速率": "待启动",
+            "有效期": "2026-11-01 00:00:00~2027-11-01 00:00:00",
         },
         {
             "id": 2, "status": "写入阻塞", "pending": True, "abnormal": True,
-            "管道编号": "SK-0002", "数据流": "payment_log_cdc",
+            "管道编号": "SK-0002", "源端": "PROD-PG-02", "数据流": "payment_log_cdc",
             "目标载体": "ods.payment_log_iceberg", "写入模式": "APPEND",
             "分区列": "ds=txn_date", "批次大小": "1000行/批",
             "压缩格式": "SNAPPY", "写入速率": "5MB/min",
+            "有效期": "2026-11-01 00:00:00~2027-11-01 00:00:00",
+        },
+        {
+            "id": 3, "status": "草稿", "pending": True, "abnormal": False,
+            "管道编号": "SK-A2", "源端": "PROD-MYSQL-01", "数据流": "order_events_cdc",
+            "目标载体": "ads.order_events_iceberg", "写入模式": "UPSERT",
+            "分区列": "ds=event_date", "批次大小": "5000行/批",
+            "压缩格式": "ZSTD-Level3", "写入速率": "待启动",
+            "有效期": "2026-11-22 00:00:00~2027-11-22 00:00:00",
+        },
+        {
+            "id": 4, "status": "写入中", "pending": True, "abnormal": False,
+            "管道编号": "SK-B1", "源端": "PROD-MYSQL-B", "数据流": "order_events_cdc",
+            "目标载体": "ads.order_events_iceberg", "写入模式": "UPSERT",
+            "分区列": "ds=event_date", "批次大小": "5000行/批",
+            "压缩格式": "ZSTD-Level3", "写入速率": "620MB/min",
+            "有效期": "2026-11-01 00:00:00~2027-11-01 00:00:00",
         },
     ],
     "lag_monitor": [
@@ -181,7 +206,8 @@ SEED_ROWS: dict[str, list[dict[str, Any]]] = {
     "iceberg_commit": [
         {
             "id": 1, "status": "已提交", "pending": True, "abnormal": False,
-            "快照编号": "IC-0001", "目标表": "ads.order_events_iceberg",
+            "快照编号": "IC-0001", "管道编号": "SK-A1", "批次号": "",
+            "目标表": "ads.order_events_iceberg",
             "数据文件": "s3://warehouse/ads/order_events/data/part-00001.parquet",
             "清单文件": "metadata/manifest-1001.avro",
             "快照ID": "9182736450123456789",
@@ -190,7 +216,8 @@ SEED_ROWS: dict[str, list[dict[str, Any]]] = {
         },
         {
             "id": 2, "status": "提交冲突", "pending": True, "abnormal": True,
-            "快照编号": "IC-0002", "目标表": "ods.payment_log_iceberg",
+            "快照编号": "IC-0002", "管道编号": "SK-0002", "批次号": "",
+            "目标表": "ods.payment_log_iceberg",
             "数据文件": "s3://warehouse/ods/payment_log/data/part-00015.parquet",
             "清单文件": "metadata/manifest-2005.avro",
             "快照ID": "冲突-并发写入检测",

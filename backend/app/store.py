@@ -14,6 +14,9 @@ class Store:
         self._tables: dict[str, list[dict[str, Any]]] = {
             name: [dict(row) for row in rows] for name, rows in SEED_ROWS.items()
         }
+        # 落盘数据交接台账：批次号 -> 已受理批次（解析就绪/落盘确认）。
+        # 独立于业务模块表，保证同一解析批次跨管道交接只落一次、可断点续做。
+        self._handoff_batches: dict[str, dict[str, Any]] = {}
 
     def module_names(self) -> list[str]:
         return sorted(self._tables)
@@ -25,6 +28,27 @@ class Store:
         for row in self.rows(module):
             if int(row.get("id", 0)) == entry_id:
                 return row
+        return None
+
+    # ---- 落盘数据交接批次台账 ----
+
+    def handoff_batch(self, batch_no: str) -> dict[str, Any] | None:
+        return self._handoff_batches.get(batch_no)
+
+    def save_handoff_batch(self, record: dict[str, Any]) -> None:
+        self._handoff_batches[str(record["批次号"])] = record
+
+    def handoff_batches_for(self, source_id: str) -> list[dict[str, Any]]:
+        return [
+            record for record in self._handoff_batches.values()
+            if record.get("源端") == source_id
+        ]
+
+    def open_handoff_batch(self, source_id: str) -> dict[str, Any] | None:
+        """该源端最近一个已受理但尚未落盘确认的批次（解析就绪待交接）。"""
+        for record in reversed(list(self._handoff_batches.values())):
+            if record.get("源端") == source_id and record.get("状态") == "解析就绪":
+                return record
         return None
 
     def overview(self) -> dict[str, object]:

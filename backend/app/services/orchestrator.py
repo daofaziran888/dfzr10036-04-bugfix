@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from app.services.cdc_source import CdcSourceService
@@ -34,12 +35,36 @@ compaction = CompactionService()
 ddl_handle = DdlHandleService()
 
 
-def flow_cdc_to_lake(cdc_entry_id: int) -> dict[str, Any]:
+def _snapshot_brief(commit: dict[str, Any]) -> dict[str, Any]:
+    """回执中的快照摘要：拿它去湖仓工作台可核对目标表与数据文件路径。"""
+    return {
+        "快照编号": str(commit.get("快照编号", "")),
+        "管道编号": str(commit.get("管道编号", "")),
+        "批次号": str(commit.get("批次号", "")),
+        "目标表": str(commit.get("目标表", "")),
+        "数据文件": str(commit.get("数据文件", "")),
+    }
+
+
+def _find_batch_snapshot(batch_no: str) -> dict[str, Any] | None:
+    from app.store import store
+    for row in store.rows("iceberg_commit"):
+        if batch_no and str(row.get("批次号", "")) == batch_no:
+            return row
+    return None
+
+
+def flow_cdc_to_lake(cdc_entry_id: int, batch_no: str | None = None) -> dict[str, Any]:
     """主线链路1: CDC源端→Binlog解析→事件转换→维表关联→水位→落盘→湖仓提交→小文件合并
 
     调用数: 8+
+    落盘段按源端确认本源落盘权限：只选用本源授权且有效期内的写入管道，
+    同一解析批次只落一次；回执只登记本次实际生成的快照。
     """
     trace: list[str] = []
+
+    source = cdc_source.get_entry(cdc_entry_id)
+    source_id = str(source.get("源端编号", "")) if source else ""
 
     # 1. CDC配置 → Binlog解析
     result = cdc_source.trigger_downstream_binlog(cdc_entry_id)
@@ -67,14 +92,22 @@ def flow_cdc_to_lake(cdc_entry_id: int) -> dict[str, Any]:
                 if cp:
                     trace.append(f"watermark_mgr#{ws['watermark']['id']} -> checkpoint#{cp['id']}")
 
-    # 6. 落盘 → iceberg提交
-    sink_rows = [r for r in __import__("app.store", fromlist=["store"]).store.rows("sink_writer")
-                 if r.get("status") == "写入中"]
-    if sink_rows:
-        sink_id = sink_rows[0]["id"]
-        commit = sink_writer.trigger_iceberg_commit(sink_id)
+    # 6. 落盘 → iceberg提交：受理/沿用解析批次，按本源落盘权限选定管道
+    batch = sink_writer.accept_batch(source_id, result, batch_no=batch_no)
+    if batch is None:
+        return {
+            "ok": False,
+            "step": "sink_handoff",
+            "message": f"交接批次 {batch_no} 不存在或不属于源端 {source_id}",
+        }
+
+    now = datetime.now()
+    pipeline = sink_writer.resolve_write_pipeline(source_id, now)
+    commit: dict[str, Any] | None = None
+    if pipeline is not None:
+        commit = sink_writer.commit_batch(batch, pipeline)
         if commit:
-            trace.append(f"sink_writer#{sink_id} -> iceberg_commit#{commit['id']}")
+            trace.append(f"sink_writer#{pipeline['id']} -> iceberg_commit#{commit['id']}")
 
             # 7. iceberg提交 → compaction + expire
             ce = iceberg_commit.trigger_compaction_and_expire(commit["id"])
@@ -86,7 +119,40 @@ def flow_cdc_to_lake(cdc_entry_id: int) -> dict[str, Any]:
                 if em and em.get("metric_aggr"):
                     trace.append(f"compaction#{ce['compaction']['id']} -> metric_aggr#{em['metric_aggr']['id']}")
 
-    return {"ok": True, "trace": trace, "call_count": len(trace)}
+    # 落盘数据交接回执：区分解析就绪/落盘确认，只记实际生成的快照
+    receipt: dict[str, Any] = {
+        "源端": source_id,
+        "批次号": batch["批次号"],
+        "批次状态": batch["状态"],
+        "解析规则": batch["解析规则"],
+        "字段映射": batch["字段映射"],
+        "落盘权限确认": {
+            "授权管道": [
+                {
+                    "管道编号": str(row.get("管道编号", "")),
+                    "status": str(row.get("status", "")),
+                    "有效期": str(row.get("有效期", "")),
+                    "当前可用": row in sink_writer.usable_pipelines(source_id, now),
+                }
+                for row in sink_writer.authorized_pipelines(source_id)
+            ],
+            "选中管道": str(pipeline.get("管道编号", "")) if pipeline else None,
+            "越权拦截": [
+                str(row.get("管道编号", ""))
+                for row in sink_writer.unauthorized_lookalikes(source_id)
+            ],
+        },
+        "本次新增快照": [_snapshot_brief(commit)] if commit else [],
+    }
+    if not commit and batch.get("状态") == "落盘确认":
+        # 重发同一次交接：批次已确认，不再重复提交，回执指向已确认快照
+        existing = _find_batch_snapshot(str(batch["批次号"]))
+        if existing is not None:
+            receipt["已确认快照"] = _snapshot_brief(existing)
+    if pipeline is None:
+        receipt["message"] = "缺少本源可用落盘管道，批次已受理为解析就绪，待补齐绑定后续做"
+
+    return {"ok": True, "trace": trace, "call_count": len(trace), "落盘数据交接回执": receipt}
 
 
 def flow_lag_recovery(cdc_entry_id: int) -> dict[str, Any]:

@@ -11,7 +11,7 @@ class IcebergCommitService(BaseModuleService):
     MODULE = "iceberg_commit"
     ENTITY = "提交快照"
     OPERATION_TERM = "校验"
-    LIST_FIELDS = ["快照编号", "目标表", "数据文件", "清单文件", "快照ID", "提交状态", "影响行数", "提交时间"]
+    LIST_FIELDS = ["快照编号", "管道编号", "批次号", "目标表", "数据文件", "清单文件", "快照ID", "提交状态", "影响行数", "提交时间"]
     REQUIRED_FIELDS = ["快照编号", "目标表", "数据文件"]
     STATUS_ORDER = ["待提交", "提交中", "已提交", "提交冲突"]
     ACTION_RULES = {"启动提交": "提交中", "重试提交": "已提交", "标记冲突": "提交冲突"}

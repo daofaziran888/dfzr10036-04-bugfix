@@ -101,10 +101,13 @@ def run_action(module: str, entry_id: int, payload: ActionPayload) -> ActionResu
 # ---- 跨模块编排流端点 ----
 
 @router.post("/flows/cdc-to-lake")
-def trigger_flow_cdc_to_lake(cdc_entry_id: int) -> dict[str, Any]:
-    """主线链路: CDC源端 -> Binlog解析 -> 事件转换 -> 维表关联 -> 水位 -> 落盘 -> 湖仓提交 -> 小文件合并"""
+def trigger_flow_cdc_to_lake(cdc_entry_id: int, batch_no: str | None = None) -> dict[str, Any]:
+    """主线链路: CDC源端 -> Binlog解析 -> 事件转换 -> 维表关联 -> 水位 -> 落盘 -> 湖仓提交 -> 小文件合并
+
+    batch_no 用于重发同一次交接：沿用已受理批次续做，不重复提交。
+    """
     from app.services.orchestrator import flow_cdc_to_lake
-    return flow_cdc_to_lake(cdc_entry_id)
+    return flow_cdc_to_lake(cdc_entry_id, batch_no=batch_no)
 
 
 @router.post("/flows/lag-recovery")
